@@ -22,21 +22,22 @@ extension AsrManager {
         }
 
         // Route to appropriate processing method based on audio length
-        if audioSamples.count <= ASRConstants.maxModelSamples {
+        let maxSamples = getMaxModelSamples()
+        if audioSamples.count <= maxSamples {
             let originalLength = audioSamples.count
             let frameAlignedCandidate =
                 ((originalLength + ASRConstants.samplesPerEncoderFrame - 1)
                     / ASRConstants.samplesPerEncoderFrame) * ASRConstants.samplesPerEncoderFrame
             let frameAlignedLength: Int
             let alignedSamples: [Float]
-            if frameAlignedCandidate > originalLength && frameAlignedCandidate <= ASRConstants.maxModelSamples {
+            if frameAlignedCandidate > originalLength && frameAlignedCandidate <= maxSamples {
                 frameAlignedLength = frameAlignedCandidate
                 alignedSamples = audioSamples + Array(repeating: 0, count: frameAlignedLength - originalLength)
             } else {
                 frameAlignedLength = originalLength
                 alignedSamples = audioSamples
             }
-            let paddedAudio: [Float] = padAudioIfNeeded(alignedSamples, targetLength: ASRConstants.maxModelSamples)
+            let paddedAudio: [Float] = padAudioIfNeeded(alignedSamples, targetLength: maxSamples)
             let (hypothesis, encoderSequenceLength) = try await executeMLInferenceWithTimings(
                 paddedAudio,
                 originalLength: frameAlignedLength,
@@ -107,8 +108,9 @@ extension AsrManager {
         globalFrameOffset: Int = 0
     ) async throws -> (hypothesis: TdtHypothesis, encoderSequenceLength: Int) {
 
-        // Zipformer2 path: compute mel → run encoder → decode
-        if let models = asrModels, models.version.requiresMelInput {
+        // Zipformer2 with separate mel path (non-fused): compute mel → run encoder → decode
+        // For fused Zipformer2, fall through to the normal Parakeet path below (same audio_signal interface)
+        if let models = asrModels, models.version.requiresMelInput, !models.hasFusedMel {
             return try await executeZipformerInference(
                 paddedAudio,
                 originalLength: originalLength,
@@ -155,10 +157,15 @@ extension AsrManager {
                 encoderOutputProvider = preprocessorOutput
             }
 
+            // Parakeet uses "encoder"/"encoder_length", Zipformer2 fused uses "encoder_out"/"encoder_out_lens"
+            let encoderKey = encoderOutputProvider.featureValue(for: "encoder") != nil ? "encoder" : "encoder_out"
+            let lengthKey =
+                encoderOutputProvider.featureValue(for: "encoder_length") != nil
+                ? "encoder_length" : "encoder_out_lens"
             let rawEncoderOutput = try extractFeatureValue(
-                from: encoderOutputProvider, key: "encoder", errorMessage: "Invalid encoder output")
+                from: encoderOutputProvider, key: encoderKey, errorMessage: "Invalid encoder output")
             let encoderLength = try extractFeatureValue(
-                from: encoderOutputProvider, key: "encoder_length",
+                from: encoderOutputProvider, key: lengthKey,
                 errorMessage: "Invalid encoder output length")
 
             let encoderSequenceLength = encoderLength[0].intValue
@@ -240,6 +247,7 @@ extension AsrManager {
     ) async throws -> (tokens: [Int], timestamps: [Int], confidences: [Float], encoderSequenceLength: Int) {
         // Select and copy decoder state for the source
         var state = (source == .microphone) ? microphoneDecoderState : systemDecoderState
+        let maxSamples = getMaxModelSamples()
 
         let originalLength = chunkSamples.count
         let frameAlignedCandidate =
@@ -249,7 +257,7 @@ extension AsrManager {
         let alignedSamples: [Float]
         if previousTokens.isEmpty
             && frameAlignedCandidate > originalLength
-            && frameAlignedCandidate <= ASRConstants.maxModelSamples
+            && frameAlignedCandidate <= maxSamples
         {
             frameAlignedLength = frameAlignedCandidate
             alignedSamples = chunkSamples + Array(repeating: 0, count: frameAlignedLength - originalLength)
@@ -257,7 +265,7 @@ extension AsrManager {
             frameAlignedLength = originalLength
             alignedSamples = chunkSamples
         }
-        let padded = padAudioIfNeeded(alignedSamples, targetLength: ASRConstants.maxModelSamples)
+        let padded = padAudioIfNeeded(alignedSamples, targetLength: maxSamples)
         let (hypothesis, encLen) = try await executeMLInferenceWithTimings(
             padded,
             originalLength: frameAlignedLength,

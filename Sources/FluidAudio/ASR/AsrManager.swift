@@ -33,6 +33,11 @@ public actor AsrManager {
         return asrModels?.version.decoderLayers ?? 2
     }
 
+    /// Get the max audio samples for the current model's preprocessor.
+    internal func getMaxModelSamples() -> Int {
+        return asrModels?.version.maxAudioSamples ?? ASRConstants.maxModelSamples
+    }
+
     /// Token duration optimization model
 
     /// Cached vocabulary loaded once during initialization
@@ -100,8 +105,8 @@ public actor AsrManager {
         let decoderReady = decoderModel != nil && jointModel != nil
         guard decoderReady else { return false }
 
-        if asrModels?.version.requiresMelInput == true {
-            // Zipformer2: encoder takes mel frames, no preprocessor needed
+        if asrModels?.version.requiresMelInput == true && asrModels?.hasFusedMel != true {
+            // Non-fused Zipformer2: needs mel spectrogram extractor
             return preprocessorModel != nil && melSpectrogram != nil
         } else if asrModels?.usesSplitFrontend == true {
             // Split frontend: need both preprocessor and encoder
@@ -130,7 +135,8 @@ public actor AsrManager {
         self.systemDecoderState = TdtDecoderState.make(decoderLayers: layers)
 
         // Initialize mel spectrogram for models that need external mel computation
-        if models.version.requiresMelInput {
+        // (non-fused Zipformer2 only; fused models handle mel internally)
+        if models.version.requiresMelInput && !models.hasFusedMel {
             // Kaldi-compatible fbank: 80 bins, no preemphasis, periodic Hann window
             self.melSpectrogram = AudioMelSpectrogram(
                 sampleRate: 16000,

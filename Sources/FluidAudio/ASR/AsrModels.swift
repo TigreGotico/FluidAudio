@@ -85,6 +85,16 @@ public enum AsrModelVersion: Sendable {
         default: return 128
         }
     }
+
+    /// Maximum audio samples for the fused preprocessor input.
+    /// Zipformer2 uses 239120 (produces 1495 mel frames for encoder compatibility).
+    /// Parakeet uses 240000 (15s at 16kHz).
+    public var maxAudioSamples: Int {
+        switch self {
+        case .zipformer2: return 239_120
+        default: return 240_000
+        }
+    }
 }
 
 public struct AsrModels: Sendable {
@@ -101,6 +111,11 @@ public struct AsrModels: Sendable {
     public let vocabulary: [Int: String]
     public let version: AsrModelVersion
 
+    /// Whether the preprocessor has fused mel extraction (takes raw audio, not mel frames).
+    /// When true, the Zipformer2 model works like Parakeet: audio_signal → encoder features.
+    /// When false, external mel computation is required before feeding the encoder.
+    public let hasFusedMel: Bool
+
     private static let logger = AppLogger(category: "AsrModels")
 
     public init(
@@ -110,7 +125,8 @@ public struct AsrModels: Sendable {
         joint: MLModel,
         configuration: MLModelConfiguration,
         vocabulary: [Int: String],
-        version: AsrModelVersion
+        version: AsrModelVersion,
+        hasFusedMel: Bool = false
     ) {
         self.encoder = encoder
         self.preprocessor = preprocessor
@@ -119,11 +135,12 @@ public struct AsrModels: Sendable {
         self.configuration = configuration
         self.vocabulary = vocabulary
         self.version = version
+        self.hasFusedMel = hasFusedMel
     }
 
-    /// Whether this model uses a separate preprocessor and encoder (true for 0.6B, false for 110m fused)
+    /// Whether this model uses a separate preprocessor and encoder (true for 0.6B, false for 110m/zipformer2 fused)
     public var usesSplitFrontend: Bool {
-        !version.hasFusedEncoder
+        !version.hasFusedEncoder && !hasFusedMel
     }
 }
 
@@ -392,9 +409,21 @@ extension AsrModels {
             return try MLModel(contentsOf: compiledURL, configuration: config)
         }
 
-        // Load encoder (serves as the "preprocessor" in the AsrModels struct)
-        let encoderModel = try loadModel(
-            name: ModelNames.Zipformer2.encoder, packageExt: ".mlpackage", compiledExt: ".mlmodelc")
+        // Check for fused Preprocessor first (--fuse-mel export), then fall back to separate encoder
+        let isFused =
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("Preprocessor.mlpackage").path)
+            || FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("Preprocessor.mlmodelc").path)
+
+        let encoderModel: MLModel
+        if isFused {
+            encoderModel = try loadModel(
+                name: "Preprocessor", packageExt: ".mlpackage", compiledExt: ".mlmodelc")
+        } else {
+            encoderModel = try loadModel(
+                name: ModelNames.Zipformer2.encoder, packageExt: ".mlpackage", compiledExt: ".mlmodelc")
+        }
 
         // Load decoder
         let decoderModel = try loadModel(
@@ -418,7 +447,7 @@ extension AsrModels {
             vocabulary[index] = token
         }
 
-        // The encoder serves as "preprocessor" in AsrModels (mel → encoder features)
+        // The encoder/preprocessor serves as "preprocessor" in AsrModels
         return AsrModels(
             encoder: nil,
             preprocessor: encoderModel,
@@ -426,7 +455,8 @@ extension AsrModels {
             joint: joinerModel,
             configuration: config,
             vocabulary: vocabulary,
-            version: .zipformer2
+            version: .zipformer2,
+            hasFusedMel: isFused
         )
     }
 
