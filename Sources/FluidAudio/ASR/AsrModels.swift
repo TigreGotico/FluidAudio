@@ -8,12 +8,15 @@ public enum AsrModelVersion: Sendable {
     case v3
     /// 110M parameter hybrid TDT-CTC model with fused preprocessor+encoder
     case tdtCtc110m
+    /// Zipformer2 transducer (icefall/sherpa-onnx) with stateless decoder
+    case zipformer2
 
     var repo: Repo {
         switch self {
         case .v2: return .parakeetV2
         case .v3: return .parakeet
         case .tdtCtc110m: return .parakeetTdtCtc110m
+        case .zipformer2: return .zipformer2
         }
     }
 
@@ -25,10 +28,34 @@ public enum AsrModelVersion: Sendable {
         }
     }
 
+    /// Whether this model takes mel frames as input (true) or raw audio (false)
+    public var requiresMelInput: Bool {
+        switch self {
+        case .zipformer2: return true
+        default: return false
+        }
+    }
+
+    /// Whether this model uses a stateless decoder (context window) vs stateful LSTM
+    public var hasStatelessDecoder: Bool {
+        switch self {
+        case .zipformer2: return true
+        default: return false
+        }
+    }
+
+    /// Decoder context window size (for stateless decoders)
+    public var contextSize: Int {
+        switch self {
+        case .zipformer2: return 2
+        default: return 0  // Not applicable for LSTM decoders
+        }
+    }
+
     /// Encoder hidden dimension for this model version
     public var encoderHiddenSize: Int {
         switch self {
-        case .tdtCtc110m: return 512
+        case .tdtCtc110m, .zipformer2: return 512
         default: return 1024
         }
     }
@@ -38,6 +65,7 @@ public enum AsrModelVersion: Sendable {
         switch self {
         case .v2, .tdtCtc110m: return 1024
         case .v3: return 8192
+        case .zipformer2: return 0
         }
     }
 
@@ -45,7 +73,16 @@ public enum AsrModelVersion: Sendable {
     public var decoderLayers: Int {
         switch self {
         case .tdtCtc110m: return 1
+        case .zipformer2: return 1  // Dummy, not used for stateless decoder
         default: return 2
+        }
+    }
+
+    /// Number of mel bins for the encoder input
+    public var melBins: Int {
+        switch self {
+        case .zipformer2: return 80
+        default: return 128
         }
     }
 }
@@ -123,7 +160,7 @@ extension AsrModels {
 
     private static func inferredVersion(from directory: URL) -> AsrModelVersion? {
         let directoryPath = directory.path.lowercased()
-        let knownVersions: [AsrModelVersion] = [.tdtCtc110m, .v2, .v3]
+        let knownVersions: [AsrModelVersion] = [.zipformer2, .tdtCtc110m, .v2, .v3]
 
         for version in knownVersions {
             if directoryPath.contains(version.repo.folderName.lowercased()) {

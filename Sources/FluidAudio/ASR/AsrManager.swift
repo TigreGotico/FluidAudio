@@ -385,6 +385,16 @@ public actor AsrManager {
                 isLastChunk: isLastChunk,
                 globalFrameOffset: globalFrameOffset
             )
+        case .zipformer2:
+            let zipformerDecoder = ZipformerRnntDecoder(config: adaptedConfig)
+            return try zipformerDecoder.decode(
+                encoderOutput: encoderOutput,
+                encoderSequenceLength: encoderSequenceLength,
+                decoderModel: decoder_,
+                joinerModel: joint,
+                blankId: models.version.blankId,
+                contextSize: models.version.contextSize
+            )
         }
     }
 

@@ -23,6 +23,7 @@ public enum Repo: String, CaseIterable {
     case qwen3AsrInt8 = "FluidInference/qwen3-asr-0.6b-coreml/int8"
     case multilingualG2p = "FluidInference/charsiu-g2p-byt5-coreml"
     case parakeetTdtCtc110m = "FluidInference/parakeet-tdt-ctc-110m-coreml"
+    case zipformer2 = "FluidInference/sherpa-onnx-zipformer2-coreml"
 
     /// Repository slug (without owner)
     public var name: String {
@@ -69,6 +70,8 @@ public enum Repo: String, CaseIterable {
             return "charsiu-g2p-byt5-coreml"
         case .parakeetTdtCtc110m:
             return "parakeet-tdt-ctc-110m-coreml"
+        case .zipformer2:
+            return "sherpa-onnx-zipformer2-coreml"
         }
     }
 
@@ -91,6 +94,8 @@ public enum Repo: String, CaseIterable {
             return "FluidInference/qwen3-asr-0.6b-coreml"
         case .parakeetTdtCtc110m:
             return "FluidInference/parakeet-tdt-ctc-110m-coreml"
+        case .zipformer2:
+            return "FluidInference/sherpa-onnx-zipformer2-coreml"
         default:
             return "FluidInference/\(name)"
         }
@@ -151,6 +156,8 @@ public enum Repo: String, CaseIterable {
             return "charsiu-g2p-byt5"
         case .parakeetTdtCtc110m:
             return "parakeet-tdt-ctc-110m"
+        case .zipformer2:
+            return "sherpa-onnx-zipformer2"
         default:
             return name
         }
@@ -236,10 +243,31 @@ public enum ModelNames {
             switch repo {
             case .parakeetTdtCtc110m:
                 return vocabularyFileArray
+            case .zipformer2:
+                return "vocab.json"
             default:
                 return vocabularyFile
             }
         }
+    }
+
+    /// Zipformer2 transducer model names (icefall/sherpa-onnx)
+    public enum Zipformer2 {
+        public static let encoder = "encoder"
+        public static let decoder = "decoder"
+        public static let joiner = "joiner"
+        public static let vocabulary = "vocab.json"
+        public static let metadata = "metadata.json"
+
+        public static let encoderFile = encoder + ".mlpackage"
+        public static let decoderFile = decoder + ".mlpackage"
+        public static let joinerFile = joiner + ".mlpackage"
+
+        public static let requiredModels: Set<String> = [
+            encoderFile,
+            decoderFile,
+            joinerFile,
+        ]
     }
 
     /// CTC model names
@@ -642,6 +670,8 @@ public enum ModelNames {
             return ModelNames.Qwen3ASR.requiredModelsFull
         case .multilingualG2p:
             return ModelNames.MultilingualG2P.requiredModels
+        case .zipformer2:
+            return ModelNames.Zipformer2.requiredModels
         }
     }
 }
