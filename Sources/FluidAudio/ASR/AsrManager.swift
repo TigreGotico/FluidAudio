@@ -264,6 +264,21 @@ public actor AsrManager {
     }
 
     internal func initializeDecoderState(for source: AudioSource) async throws {
+        // Zipformer2 uses a stateless decoder — no LSTM state to initialize
+        if asrModels?.version.hasStatelessDecoder == true {
+            var state: TdtDecoderState
+            switch source {
+            case .microphone: state = microphoneDecoderState
+            case .system: state = systemDecoderState
+            }
+            state.reset()
+            switch source {
+            case .microphone: microphoneDecoderState = state
+            case .system: systemDecoderState = state
+            }
+            return
+        }
+
         guard let decoderModel = decoderModel else {
             throw ASRError.notInitialized
         }

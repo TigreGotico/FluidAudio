@@ -639,22 +639,38 @@ extension AsrManager {
         // Step 1: Compute mel spectrogram from audio samples
         // Zipformer2 uses kaldi-style fbank: 80 bins, no preemphasis, periodic window
         let melResult = melSpec.computeFlatTransposed(audio: audioSamples)
-        let melFrames = melResult.numFrames
         let melBins = models.version.melBins
 
-        // Step 2: Build encoder input as MLMultiArray [1, melFrames, melBins]
+        // The encoder has a fixed input size (mel_frames from conversion, default 1495).
+        // Read the expected size from the encoder model's input description.
+        let encoderInputDesc = encoderModel.modelDescription.inputDescriptionsByName["x"]
+        let expectedMelFrames: Int
+        if let constraint = encoderInputDesc?.multiArrayConstraint {
+            expectedMelFrames = constraint.shape[1].intValue  // [1, T, 80]
+        } else {
+            expectedMelFrames = 1495  // Default from conversion script
+        }
+
+        let actualMelLength = min(melResult.melLength, expectedMelFrames)
+
+        // Step 2: Build encoder input as MLMultiArray [1, expectedMelFrames, melBins]
+        // Pad with zeros if audio is shorter, truncate if longer
         let melArray = try MLMultiArray(
-            shape: [1, NSNumber(value: melFrames), NSNumber(value: melBins)],
+            shape: [1, NSNumber(value: expectedMelFrames), NSNumber(value: melBins)],
             dataType: .float32
         )
-        let melPtr = melArray.dataPointer.bindMemory(to: Float.self, capacity: melFrames * melBins)
+        // Zero-initialize (handles padding automatically)
+        let totalMelElements = expectedMelFrames * melBins
+        let melPtr = melArray.dataPointer.bindMemory(to: Float.self, capacity: totalMelElements)
+        memset(melPtr, 0, totalMelElements * MemoryLayout<Float>.size)
+        // Copy actual mel data (may be shorter than expectedMelFrames)
+        let copyElements = min(melResult.mel.count, actualMelLength * melBins)
         melResult.mel.withUnsafeBufferPointer { srcPtr in
-            memcpy(
-                melPtr, srcPtr.baseAddress!, min(melResult.mel.count, melFrames * melBins) * MemoryLayout<Float>.size)
+            memcpy(melPtr, srcPtr.baseAddress!, copyElements * MemoryLayout<Float>.size)
         }
 
         let melLensArray = try MLMultiArray(shape: [1], dataType: .int32)
-        melLensArray[0] = NSNumber(value: Int32(melResult.melLength))
+        melLensArray[0] = NSNumber(value: Int32(expectedMelFrames))
 
         let encoderInput = try MLDictionaryFeatureProvider(dictionary: [
             "x": MLFeatureValue(multiArray: melArray),

@@ -354,8 +354,9 @@ extension AsrModels {
 
     /// Load Zipformer2 transducer models directly from a local directory.
     ///
-    /// The directory should contain encoder.mlpackage, decoder.mlpackage, joiner.mlpackage,
-    /// vocab.json, and optionally metadata.json.
+    /// The directory should contain encoder, decoder, and joiner models as either
+    /// `.mlpackage` (source) or `.mlmodelc` (compiled) format, plus vocab.json.
+    /// If `.mlpackage` files are found, they are compiled on the fly.
     ///
     /// - Parameters:
     ///   - directory: Directory containing the Zipformer2 model files
@@ -365,33 +366,47 @@ extension AsrModels {
         from directory: URL,
         configuration: MLModelConfiguration? = nil
     ) throws -> AsrModels {
-        let config = configuration ?? defaultConfiguration()
-        let fm = FileManager.default
+        let config: MLModelConfiguration
+        if let configuration {
+            config = configuration
+        } else {
+            // Zipformer2 models exported with iOS18 target work best with .all compute units.
+            // The default .cpuAndNeuralEngine triggers very slow ANE compilation for these models.
+            let c = MLModelConfiguration()
+            c.computeUnits = .all
+            config = c
+        }
+
+        func loadModel(name: String, packageExt: String, compiledExt: String) throws -> MLModel {
+            let compiledPath = directory.appendingPathComponent(name + compiledExt)
+            if FileManager.default.fileExists(atPath: compiledPath.path) {
+                return try MLModel(contentsOf: compiledPath, configuration: config)
+            }
+            let packagePath = directory.appendingPathComponent(name + packageExt)
+            guard FileManager.default.fileExists(atPath: packagePath.path) else {
+                throw AsrModelsError.modelNotFound(
+                    name + packageExt, packagePath)
+            }
+            // Compile .mlpackage → temporary .mlmodelc
+            let compiledURL = try MLModel.compileModel(at: packagePath)
+            return try MLModel(contentsOf: compiledURL, configuration: config)
+        }
 
         // Load encoder (serves as the "preprocessor" in the AsrModels struct)
-        let encoderPath = directory.appendingPathComponent(ModelNames.Zipformer2.encoderFile)
-        guard fm.fileExists(atPath: encoderPath.path) else {
-            throw AsrModelsError.modelNotFound(ModelNames.Zipformer2.encoderFile, encoderPath)
-        }
-        let encoderModel = try MLModel(contentsOf: encoderPath, configuration: config)
+        let encoderModel = try loadModel(
+            name: ModelNames.Zipformer2.encoder, packageExt: ".mlpackage", compiledExt: ".mlmodelc")
 
         // Load decoder
-        let decoderPath = directory.appendingPathComponent(ModelNames.Zipformer2.decoderFile)
-        guard fm.fileExists(atPath: decoderPath.path) else {
-            throw AsrModelsError.modelNotFound(ModelNames.Zipformer2.decoderFile, decoderPath)
-        }
-        let decoderModel = try MLModel(contentsOf: decoderPath, configuration: config)
+        let decoderModel = try loadModel(
+            name: ModelNames.Zipformer2.decoder, packageExt: ".mlpackage", compiledExt: ".mlmodelc")
 
         // Load joiner
-        let joinerPath = directory.appendingPathComponent(ModelNames.Zipformer2.joinerFile)
-        guard fm.fileExists(atPath: joinerPath.path) else {
-            throw AsrModelsError.modelNotFound(ModelNames.Zipformer2.joinerFile, joinerPath)
-        }
-        let joinerModel = try MLModel(contentsOf: joinerPath, configuration: config)
+        let joinerModel = try loadModel(
+            name: ModelNames.Zipformer2.joiner, packageExt: ".mlpackage", compiledExt: ".mlmodelc")
 
         // Load vocabulary (JSON array format)
         let vocabPath = directory.appendingPathComponent(ModelNames.Zipformer2.vocabulary)
-        guard fm.fileExists(atPath: vocabPath.path) else {
+        guard FileManager.default.fileExists(atPath: vocabPath.path) else {
             throw AsrModelsError.modelNotFound(ModelNames.Zipformer2.vocabulary, vocabPath)
         }
         let vocabData = try Data(contentsOf: vocabPath)

@@ -241,9 +241,12 @@ enum TranscribeCommand {
                         modelVersion = .v3
                     case "tdt-ctc-110m", "110m":
                         modelVersion = .tdtCtc110m
+                    case "zipformer2", "zipformer":
+                        modelVersion = .zipformer2
                     default:
                         logger.error(
-                            "Invalid model version: \(arguments[i + 1]). Use 'v2', 'v3', or 'tdt-ctc-110m'")
+                            "Invalid model version: \(arguments[i + 1]). Use 'v2', 'v3', 'tdt-ctc-110m', or 'zipformer2'"
+                        )
                         exit(1)
                     }
                     i += 1
@@ -290,7 +293,11 @@ enum TranscribeCommand {
             let models: AsrModels
             if let modelDir = modelDir {
                 let dir = URL(fileURLWithPath: modelDir)
-                models = try await AsrModels.load(from: dir, version: modelVersion)
+                if modelVersion == .zipformer2 {
+                    models = try AsrModels.loadZipformer2(from: dir)
+                } else {
+                    models = try await AsrModels.load(from: dir, version: modelVersion)
+                }
             } else {
                 models = try await AsrModels.downloadAndLoad(version: modelVersion)
             }
