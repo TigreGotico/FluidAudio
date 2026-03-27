@@ -108,20 +108,6 @@ extension AsrManager {
         globalFrameOffset: Int = 0
     ) async throws -> (hypothesis: TdtHypothesis, encoderSequenceLength: Int) {
 
-        // Zipformer2 with separate mel path (non-fused): compute mel → run encoder → decode
-        // For fused Zipformer2, fall through to the normal Parakeet path below (same audio_signal interface)
-        if let models = asrModels, models.version.requiresMelInput, !models.hasFusedMel {
-            return try await executeZipformerInference(
-                paddedAudio,
-                originalLength: originalLength,
-                actualAudioFrames: actualAudioFrames,
-                decoderState: &decoderState,
-                contextFrameAdjustment: contextFrameAdjustment,
-                isLastChunk: isLastChunk,
-                globalFrameOffset: globalFrameOffset
-            )
-        }
-
         let preprocessorInput = try await preparePreprocessorInput(
             paddedAudio, actualLength: originalLength)
 
@@ -621,96 +607,4 @@ extension AsrManager {
         }
     }
 
-    // MARK: - Zipformer2 Inference
-
-    /// Execute inference for Zipformer2 models: mel extraction → encoder → RNNT decode.
-    ///
-    /// The Zipformer2 encoder takes mel spectrogram frames `[1, T, 80]` as input
-    /// (unlike Parakeet which takes raw audio). This method computes the mel features
-    /// in Swift, passes them through the CoreML encoder, then runs greedy RNNT decoding.
-    internal func executeZipformerInference(
-        _ audioSamples: [Float],
-        originalLength: Int?,
-        actualAudioFrames: Int?,
-        decoderState: inout TdtDecoderState,
-        contextFrameAdjustment: Int,
-        isLastChunk: Bool,
-        globalFrameOffset: Int
-    ) async throws -> (hypothesis: TdtHypothesis, encoderSequenceLength: Int) {
-        guard let melSpec = melSpectrogram,
-            let encoderModel = preprocessorModel,  // For Zipformer2, preprocessor IS the encoder
-            let models = asrModels
-        else {
-            throw ASRError.notInitialized
-        }
-
-        // Step 1: Compute mel spectrogram from audio samples
-        // Zipformer2 uses kaldi-style fbank: 80 bins, no preemphasis, periodic window
-        let melResult = melSpec.computeFlatTransposed(audio: audioSamples)
-        let melBins = models.version.melBins
-
-        // The encoder has a fixed input size (mel_frames from conversion, default 1495).
-        // Read the expected size from the encoder model's input description.
-        let encoderInputDesc = encoderModel.modelDescription.inputDescriptionsByName["x"]
-        let expectedMelFrames: Int
-        if let constraint = encoderInputDesc?.multiArrayConstraint {
-            expectedMelFrames = constraint.shape[1].intValue  // [1, T, 80]
-        } else {
-            expectedMelFrames = 1495  // Default from conversion script
-        }
-
-        let actualMelLength = min(melResult.melLength, expectedMelFrames)
-
-        // Step 2: Build encoder input as MLMultiArray [1, expectedMelFrames, melBins]
-        // Pad with zeros if audio is shorter, truncate if longer
-        let melArray = try MLMultiArray(
-            shape: [1, NSNumber(value: expectedMelFrames), NSNumber(value: melBins)],
-            dataType: .float32
-        )
-        // Zero-initialize (handles padding automatically)
-        let totalMelElements = expectedMelFrames * melBins
-        let melPtr = melArray.dataPointer.bindMemory(to: Float.self, capacity: totalMelElements)
-        memset(melPtr, 0, totalMelElements * MemoryLayout<Float>.size)
-        // Copy actual mel data (may be shorter than expectedMelFrames)
-        let copyElements = min(melResult.mel.count, actualMelLength * melBins)
-        melResult.mel.withUnsafeBufferPointer { srcPtr in
-            memcpy(melPtr, srcPtr.baseAddress!, copyElements * MemoryLayout<Float>.size)
-        }
-
-        let melLensArray = try MLMultiArray(shape: [1], dataType: .int32)
-        melLensArray[0] = NSNumber(value: Int32(expectedMelFrames))
-
-        let encoderInput = try MLDictionaryFeatureProvider(dictionary: [
-            "x": MLFeatureValue(multiArray: melArray),
-            "x_lens": MLFeatureValue(multiArray: melLensArray),
-        ])
-
-        // Step 3: Run encoder
-        try Task.checkCancellation()
-        let encoderOutput = try await encoderModel.compatPrediction(
-            from: encoderInput, options: predictionOptions)
-
-        let rawEncoderOutput = try extractFeatureValue(
-            from: encoderOutput, key: "encoder_out",
-            errorMessage: "Invalid Zipformer2 encoder output")
-        let encoderLens = try extractFeatureValue(
-            from: encoderOutput, key: "encoder_out_lens",
-            errorMessage: "Invalid Zipformer2 encoder output length")
-
-        let encoderSequenceLength = encoderLens[0].intValue
-
-        // Step 4: Run RNNT decode
-        let hypothesis = try await tdtDecodeWithTimings(
-            encoderOutput: rawEncoderOutput,
-            encoderSequenceLength: encoderSequenceLength,
-            actualAudioFrames: actualAudioFrames ?? encoderSequenceLength,
-            originalAudioSamples: audioSamples,
-            decoderState: &decoderState,
-            contextFrameAdjustment: contextFrameAdjustment,
-            isLastChunk: isLastChunk,
-            globalFrameOffset: globalFrameOffset
-        )
-
-        return (hypothesis, encoderSequenceLength)
-    }
 }
