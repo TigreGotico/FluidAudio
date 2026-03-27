@@ -19,6 +19,9 @@ public actor AsrManager {
     internal var decoderModel: MLModel?
     internal var jointModel: MLModel?
 
+    /// Mel spectrogram extractor for models that take mel frames as input (e.g. Zipformer2)
+    internal var melSpectrogram: AudioMelSpectrogram?
+
     /// The AsrModels instance if initialized with models
     internal var asrModels: AsrModels?
 
@@ -97,7 +100,10 @@ public actor AsrManager {
         let decoderReady = decoderModel != nil && jointModel != nil
         guard decoderReady else { return false }
 
-        if asrModels?.usesSplitFrontend == true {
+        if asrModels?.version.requiresMelInput == true {
+            // Zipformer2: encoder takes mel frames, no preprocessor needed
+            return preprocessorModel != nil && melSpectrogram != nil
+        } else if asrModels?.usesSplitFrontend == true {
             // Split frontend: need both preprocessor and encoder
             return preprocessorModel != nil && encoderModel != nil
         } else {
@@ -122,6 +128,24 @@ public actor AsrManager {
         let layers = models.version.decoderLayers
         self.microphoneDecoderState = TdtDecoderState.make(decoderLayers: layers)
         self.systemDecoderState = TdtDecoderState.make(decoderLayers: layers)
+
+        // Initialize mel spectrogram for models that need external mel computation
+        if models.version.requiresMelInput {
+            // Kaldi-compatible fbank: 80 bins, no preemphasis, periodic Hann window
+            self.melSpectrogram = AudioMelSpectrogram(
+                sampleRate: 16000,
+                nMels: models.version.melBins,
+                nFFT: 512,
+                hopLength: 160,
+                winLength: 400,
+                preemph: 0.0,
+                logFloor: 1.0,
+                logFloorMode: .clamped,
+                windowPeriodic: true
+            )
+        } else {
+            self.melSpectrogram = nil
+        }
 
         logger.info("AsrManager initialized successfully with provided models")
     }
@@ -319,6 +343,7 @@ public actor AsrManager {
         encoderModel = nil
         decoderModel = nil
         jointModel = nil
+        melSpectrogram = nil
         // Reset decoder states using fresh allocations for deterministic behavior
         microphoneDecoderState = TdtDecoderState.make(decoderLayers: layers)
         systemDecoderState = TdtDecoderState.make(decoderLayers: layers)

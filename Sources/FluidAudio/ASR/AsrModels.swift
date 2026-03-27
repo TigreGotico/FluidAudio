@@ -352,6 +352,69 @@ extension AsrModels {
         return try await load(from: targetDir, configuration: nil)
     }
 
+    /// Load Zipformer2 transducer models directly from a local directory.
+    ///
+    /// The directory should contain encoder.mlpackage, decoder.mlpackage, joiner.mlpackage,
+    /// vocab.json, and optionally metadata.json.
+    ///
+    /// - Parameters:
+    ///   - directory: Directory containing the Zipformer2 model files
+    ///   - configuration: Optional MLModel configuration
+    /// - Returns: Loaded AsrModels with version set to .zipformer2
+    public static func loadZipformer2(
+        from directory: URL,
+        configuration: MLModelConfiguration? = nil
+    ) throws -> AsrModels {
+        let config = configuration ?? defaultConfiguration()
+        let fm = FileManager.default
+
+        // Load encoder (serves as the "preprocessor" in the AsrModels struct)
+        let encoderPath = directory.appendingPathComponent(ModelNames.Zipformer2.encoderFile)
+        guard fm.fileExists(atPath: encoderPath.path) else {
+            throw AsrModelsError.modelNotFound(ModelNames.Zipformer2.encoderFile, encoderPath)
+        }
+        let encoderModel = try MLModel(contentsOf: encoderPath, configuration: config)
+
+        // Load decoder
+        let decoderPath = directory.appendingPathComponent(ModelNames.Zipformer2.decoderFile)
+        guard fm.fileExists(atPath: decoderPath.path) else {
+            throw AsrModelsError.modelNotFound(ModelNames.Zipformer2.decoderFile, decoderPath)
+        }
+        let decoderModel = try MLModel(contentsOf: decoderPath, configuration: config)
+
+        // Load joiner
+        let joinerPath = directory.appendingPathComponent(ModelNames.Zipformer2.joinerFile)
+        guard fm.fileExists(atPath: joinerPath.path) else {
+            throw AsrModelsError.modelNotFound(ModelNames.Zipformer2.joinerFile, joinerPath)
+        }
+        let joinerModel = try MLModel(contentsOf: joinerPath, configuration: config)
+
+        // Load vocabulary (JSON array format)
+        let vocabPath = directory.appendingPathComponent(ModelNames.Zipformer2.vocabulary)
+        guard fm.fileExists(atPath: vocabPath.path) else {
+            throw AsrModelsError.modelNotFound(ModelNames.Zipformer2.vocabulary, vocabPath)
+        }
+        let vocabData = try Data(contentsOf: vocabPath)
+        guard let vocabArray = try JSONSerialization.jsonObject(with: vocabData) as? [String] else {
+            throw AsrModelsError.loadingFailed("Vocabulary file has unexpected format")
+        }
+        var vocabulary: [Int: String] = [:]
+        for (index, token) in vocabArray.enumerated() {
+            vocabulary[index] = token
+        }
+
+        // The encoder serves as "preprocessor" in AsrModels (mel → encoder features)
+        return AsrModels(
+            encoder: nil,
+            preprocessor: encoderModel,
+            decoder: decoderModel,
+            joint: joinerModel,
+            configuration: config,
+            vocabulary: vocabulary,
+            version: .zipformer2
+        )
+    }
+
     public static func defaultConfiguration() -> MLModelConfiguration {
         let config = MLModelConfiguration()
         config.allowLowPrecisionAccumulationOnGPU = true
