@@ -154,7 +154,16 @@ extension AsrManager {
                 from: encoderOutputProvider, key: lengthKey,
                 errorMessage: "Invalid encoder output length")
 
-            let encoderSequenceLength = encoderLength[0].intValue
+            var encoderSequenceLength = encoderLength[0].intValue
+
+            // For Zipformer2 fused models, encoder_out_lens is a traced constant (always max frames).
+            // Compute the actual valid frame count from the audio length instead.
+            // Formula: mel_frames = (samples - 200) / 160 + 1, encoder_frames = (mel_frames - 7) / 4
+            if asrModels?.version == .zipformer2, let actualLength = originalLength {
+                let melFrames = max(1, (actualLength - 200) / 160 + 1)
+                let validFrames = max(1, (melFrames - 7) / 4)
+                encoderSequenceLength = min(encoderSequenceLength, validFrames)
+            }
 
             // Calculate actual audio frames if not provided using shared constants
             let actualFrames =

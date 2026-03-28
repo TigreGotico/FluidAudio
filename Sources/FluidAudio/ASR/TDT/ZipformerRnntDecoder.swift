@@ -45,7 +45,6 @@ internal struct ZipformerRnntDecoder {
         contextSize: Int
     ) throws -> TdtHypothesis {
         let joinerDim = encoderOutput.shape[2].intValue
-        let maxSymbolsPerStep = 10
 
         // Context buffer: last `contextSize` tokens, initialized with blank
         var context = [Int](repeating: blankId, count: contextSize)
@@ -78,42 +77,38 @@ internal struct ZipformerRnntDecoder {
                 encStepPtr[d] = encPtr[0 * encStride0 + t * encStride1 + d * encStride2]
             }
 
-            var symbolsEmitted = 0
-            while symbolsEmitted < maxSymbolsPerStep {
-                // Run stateless decoder with context tokens
-                for i in 0..<contextSize {
-                    decoderInput[i] = NSNumber(value: Int32(context[i]))
-                }
+            // One prediction per encoder frame (matches Python reference decoder).
+            // Run stateless decoder with context tokens
+            for i in 0..<contextSize {
+                decoderInput[i] = NSNumber(value: Int32(context[i]))
+            }
 
-                let decInput = try MLDictionaryFeatureProvider(dictionary: [
-                    "y": MLFeatureValue(multiArray: decoderInput)
-                ])
-                let decOutput = try decoderModel.prediction(
-                    from: decInput, options: predictionOptions)
-                let decoderOut = decOutput.featureValue(for: "decoder_out")!.multiArrayValue!
+            let decInput = try MLDictionaryFeatureProvider(dictionary: [
+                "y": MLFeatureValue(multiArray: decoderInput)
+            ])
+            let decOutput = try decoderModel.prediction(
+                from: decInput, options: predictionOptions)
+            let decoderOut = decOutput.featureValue(for: "decoder_out")!.multiArrayValue!
 
-                // Run joiner: encoder_out + decoder_out -> logits
-                let joinInput = try MLDictionaryFeatureProvider(dictionary: [
-                    "encoder_out": MLFeatureValue(multiArray: encoderStep),
-                    "decoder_out": MLFeatureValue(multiArray: decoderOut),
-                ])
-                let joinOutput = try joinerModel.prediction(
-                    from: joinInput, options: predictionOptions)
-                let logits = joinOutput.featureValue(for: "logit")!.multiArrayValue!
+            // Run joiner: encoder_out + decoder_out -> logits
+            let joinInput = try MLDictionaryFeatureProvider(dictionary: [
+                "encoder_out": MLFeatureValue(multiArray: encoderStep),
+                "decoder_out": MLFeatureValue(multiArray: decoderOut),
+            ])
+            let joinOutput = try joinerModel.prediction(
+                from: joinInput, options: predictionOptions)
+            let logits = joinOutput.featureValue(for: "logit")!.multiArrayValue!
 
-                // Argmax over vocabulary using vDSP
-                let vocabSize = logits.shape.last!.intValue
-                let logitsPtr = logits.dataPointer.bindMemory(
-                    to: Float.self, capacity: vocabSize)
-                var maxVal: Float = 0
-                var maxIdx: vDSP_Length = 0
-                vDSP_maxvi(logitsPtr, 1, &maxVal, &maxIdx, vDSP_Length(vocabSize))
-                let tokenId = Int(maxIdx)
+            // Argmax over vocabulary using vDSP
+            let vocabSize = logits.shape.last!.intValue
+            let logitsPtr = logits.dataPointer.bindMemory(
+                to: Float.self, capacity: vocabSize)
+            var maxVal: Float = 0
+            var maxIdx: vDSP_Length = 0
+            vDSP_maxvi(logitsPtr, 1, &maxVal, &maxIdx, vDSP_Length(vocabSize))
+            let tokenId = Int(maxIdx)
 
-                if tokenId == blankId {
-                    break  // Move to next encoder frame
-                }
-
+            if tokenId != blankId {
                 // Emit token
                 result.ySequence.append(tokenId)
                 result.timestamps.append(t)
@@ -124,7 +119,6 @@ internal struct ZipformerRnntDecoder {
                 // Update context: shift left, add new token
                 context.removeFirst()
                 context.append(tokenId)
-                symbolsEmitted += 1
             }
         }
 
