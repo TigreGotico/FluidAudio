@@ -42,6 +42,9 @@ public actor AsrManager {
 
     /// Optional ARPA language model for beam search rescoring
     public var arpaLanguageModel: ARPALanguageModel?
+
+    /// Optional CoreML RNN language model for BPE-level beam search rescoring
+    public var rnnLanguageModel: RnnLanguageModel?
     #if DEBUG
     // Test-only setter
     internal func setVocabularyForTesting(_ vocab: [Int: String]) {
@@ -331,6 +334,11 @@ public actor AsrManager {
         self.arpaLanguageModel = lm
     }
 
+    /// Set the CoreML RNN language model for BPE-level beam search rescoring.
+    public func setRnnLanguageModel(_ lm: RnnLanguageModel) {
+        self.rnnLanguageModel = lm
+    }
+
     public func resetState() {
         // Use model's decoder layer count, or 2 if models not loaded (v2/v3 default)
         let layers = asrModels?.version.decoderLayers ?? 2
@@ -433,6 +441,7 @@ public actor AsrManager {
                     joinerModel: joint,
                     vocabulary: vocabulary,
                     lm: arpaLanguageModel,
+                    rnnLm: rnnLanguageModel,
                     blankId: models.version.blankId,
                     contextSize: models.version.contextSize,
                     beamWidth: beamWidth,

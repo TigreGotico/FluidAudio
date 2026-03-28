@@ -28,6 +28,9 @@ internal struct RnntBeam {
     var prevWord: String?
     var timestamps: [Int]
     var confidences: [Float]
+    // RNN-LM LSTM state per beam (nil when using ARPA or no LM)
+    var rnnLmH: MLMultiArray?
+    var rnnLmC: MLMultiArray?
 
     var total: Float { logProb + lmScore }
 }
@@ -123,26 +126,11 @@ internal struct ZipformerRnntDecoder {
 
     // MARK: - Modified beam search with optional LM
 
-    /// Decode encoder output using modified beam search with optional ARPA LM.
+    /// Decode encoder output using modified beam search with optional LM.
     ///
-    /// Maintains `beamWidth` hypotheses. At each encoder frame, expands each
-    /// hypothesis by trying blank + top-K non-blank tokens, then prunes to
-    /// the best `beamWidth` hypotheses by score.
-    ///
-    /// Word-level LM scores are applied at SentencePiece word boundaries (▁ prefix).
-    ///
-    /// - Parameters:
-    ///   - encoderOutput: Encoder output, shape `[1, T, joinerDim]`
-    ///   - encoderSequenceLength: Number of valid encoder frames
-    ///   - decoderModel: Stateless decoder CoreML model
-    ///   - joinerModel: Joiner CoreML model
-    ///   - vocabulary: Token ID → string mapping for LM word boundary detection
-    ///   - lm: Optional ARPA language model
-    ///   - blankId: Blank token ID (typically 0)
-    ///   - contextSize: Decoder context window size (typically 2)
-    ///   - beamWidth: Number of hypotheses to maintain (default 4)
-    ///   - lmWeight: LM score scaling factor (default 0.3)
-    ///   - tokenCandidates: Top-K non-blank tokens to consider per frame (default 8)
+    /// Supports two LM types (RNN-LM takes precedence if both provided):
+    /// - **RNN-LM**: BPE token-level scoring via CoreML LSTM (best quality)
+    /// - **ARPA**: Word-level n-gram scoring at SentencePiece boundaries
     func beamDecode(
         encoderOutput: MLMultiArray,
         encoderSequenceLength: Int,
@@ -150,6 +138,7 @@ internal struct ZipformerRnntDecoder {
         joinerModel: MLModel,
         vocabulary: [Int: String],
         lm: ARPALanguageModel?,
+        rnnLm: RnnLanguageModel?,
         blankId: Int,
         contextSize: Int,
         beamWidth: Int = 4,
@@ -173,9 +162,11 @@ internal struct ZipformerRnntDecoder {
 
         // Initialize with single blank-context beam
         let initialContext = [Int](repeating: blankId, count: contextSize)
+        let initialLmState = try rnnLm?.makeInitialState()
         var beams = [RnntBeam(
             tokens: [], context: initialContext, logProb: 0.0, lmScore: 0.0,
-            wordPieces: [], prevWord: nil, timestamps: [], confidences: []
+            wordPieces: [], prevWord: nil, timestamps: [], confidences: [],
+            rnnLmH: initialLmState?.h, rnnLmC: initialLmState?.c
         )]
 
         // Cache decoder outputs for each unique context to avoid redundant calls
@@ -241,7 +232,8 @@ internal struct ZipformerRnntDecoder {
                     logProb: beam.logProb + logProbs[blankId],
                     lmScore: beam.lmScore,
                     wordPieces: beam.wordPieces, prevWord: beam.prevWord,
-                    timestamps: beam.timestamps, confidences: beam.confidences
+                    timestamps: beam.timestamps, confidences: beam.confidences,
+                    rnnLmH: beam.rnnLmH, rnnLmC: beam.rnnLmC
                 ))
 
                 // Find top-K non-blank tokens
@@ -258,16 +250,24 @@ internal struct ZipformerRnntDecoder {
                     newContext.removeFirst()
                     newContext.append(tokenId)
 
-                    // LM scoring at word boundaries
                     var newLmScore = beam.lmScore
                     var newWordPieces = beam.wordPieces
                     var newPrevWord = beam.prevWord
+                    var newRnnLmH = beam.rnnLmH
+                    var newRnnLmC = beam.rnnLmC
 
-                    if let lm = lm, let tokenStr = vocabulary[tokenId] {
+                    if let rnnLm = rnnLm, let h = beam.rnnLmH, let c = beam.rnnLmC {
+                        // RNN-LM: token-level scoring (every token)
+                        let lmResult = try rnnLm.score(tokenId: tokenId, h: h, c: c)
+                        let lmLogProb = lmResult.logProbs.dataPointer.bindMemory(
+                            to: Float.self, capacity: rnnLm.vocabSize)[tokenId]
+                        newLmScore += lmWeight * lmLogProb
+                        newRnnLmH = lmResult.hOut
+                        newRnnLmC = lmResult.cOut
+                    } else if let lm = lm, let tokenStr = vocabulary[tokenId] {
+                        // ARPA fallback: word-level scoring at boundaries
                         newWordPieces.append(tokenStr)
-                        // Check for word boundary: SentencePiece ▁ prefix on NEXT token
                         if tokenStr.hasPrefix("\u{2581}") && !beam.wordPieces.isEmpty {
-                            // Previous word pieces form a complete word
                             let word = beam.wordPieces.joined()
                                 .replacingOccurrences(of: "\u{2581}", with: "")
                             if !word.isEmpty {
@@ -292,7 +292,9 @@ internal struct ZipformerRnntDecoder {
                         wordPieces: newWordPieces,
                         prevWord: newPrevWord,
                         timestamps: newTimestamps,
-                        confidences: newConfidences
+                        confidences: newConfidences,
+                        rnnLmH: newRnnLmH,
+                        rnnLmC: newRnnLmC
                     ))
                 }
             }
@@ -306,8 +308,8 @@ internal struct ZipformerRnntDecoder {
             decoderCache = decoderCache.filter { activeContexts.contains($0.key) }
         }
 
-        // Score final incomplete word for LM
-        if let lm = lm {
+        // Score final incomplete word for ARPA LM (RNN-LM already scored per-token)
+        if rnnLm == nil, let lm = lm {
             for i in 0..<beams.count {
                 let word = beams[i].wordPieces.joined()
                     .replacingOccurrences(of: "\u{2581}", with: "")
