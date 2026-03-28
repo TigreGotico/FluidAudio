@@ -39,6 +39,9 @@ public actor AsrManager {
 
     /// Cached vocabulary loaded once during initialization
     internal var vocabulary: [Int: String] = [:]
+
+    /// Optional ARPA language model for beam search rescoring
+    public var arpaLanguageModel: ARPALanguageModel?
     #if DEBUG
     // Test-only setter
     internal func setVocabularyForTesting(_ vocab: [Int: String]) {
@@ -323,6 +326,11 @@ public actor AsrManager {
         return directory.standardizedFileURL
     }
 
+    /// Set the ARPA language model for beam search rescoring.
+    public func setLanguageModel(_ lm: ARPALanguageModel) {
+        self.arpaLanguageModel = lm
+    }
+
     public func resetState() {
         // Use model's decoder layer count, or 2 if models not loaded (v2/v3 default)
         let layers = asrModels?.version.decoderLayers ?? 2
@@ -407,14 +415,31 @@ public actor AsrManager {
             )
         case .zipformer2:
             let zipformerDecoder = ZipformerRnntDecoder(config: adaptedConfig)
-            return try zipformerDecoder.decode(
-                encoderOutput: encoderOutput,
-                encoderSequenceLength: encoderSequenceLength,
-                decoderModel: decoder_,
-                joinerModel: joint,
-                blankId: models.version.blankId,
-                contextSize: models.version.contextSize
-            )
+            switch config.decodingMethod {
+            case .greedy:
+                return try zipformerDecoder.decode(
+                    encoderOutput: encoderOutput,
+                    encoderSequenceLength: encoderSequenceLength,
+                    decoderModel: decoder_,
+                    joinerModel: joint,
+                    blankId: models.version.blankId,
+                    contextSize: models.version.contextSize
+                )
+            case .beamSearch(let beamWidth, let lmWeight, let tokenCandidates):
+                return try zipformerDecoder.beamDecode(
+                    encoderOutput: encoderOutput,
+                    encoderSequenceLength: encoderSequenceLength,
+                    decoderModel: decoder_,
+                    joinerModel: joint,
+                    vocabulary: vocabulary,
+                    lm: arpaLanguageModel,
+                    blankId: models.version.blankId,
+                    contextSize: models.version.contextSize,
+                    beamWidth: beamWidth,
+                    lmWeight: lmWeight,
+                    tokenCandidates: tokenCandidates
+                )
+            }
         }
     }
 

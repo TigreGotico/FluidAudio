@@ -2,6 +2,14 @@ import Foundation
 
 // MARK: - Configuration
 
+/// Decoding method for transducer models.
+public enum DecodingMethod: Sendable {
+    /// Greedy search: one best token per encoder frame
+    case greedy
+    /// Modified beam search with optional LM rescoring
+    case beamSearch(beamWidth: Int = 4, lmWeight: Float = 0.3, tokenCandidates: Int = 8)
+}
+
 public struct ASRConfig: Sendable {
     public let sampleRate: Int
     public let tdtConfig: TdtConfig
@@ -19,6 +27,9 @@ public struct ASRConfig: Sendable {
     /// Default: 480,000 samples (~30 seconds at 16kHz)
     public let streamingThreshold: Int
 
+    /// Decoding method for transducer (RNNT/TDT) models
+    public let decodingMethod: DecodingMethod
+
     public static let `default` = ASRConfig()
 
     public init(
@@ -26,13 +37,15 @@ public struct ASRConfig: Sendable {
         tdtConfig: TdtConfig = .default,
         encoderHiddenSize: Int = ASRConstants.encoderHiddenSize,
         streamingEnabled: Bool = true,
-        streamingThreshold: Int = 480_000
+        streamingThreshold: Int = 480_000,
+        decodingMethod: DecodingMethod = .greedy
     ) {
         self.sampleRate = sampleRate
         self.tdtConfig = tdtConfig
         self.encoderHiddenSize = encoderHiddenSize
         self.streamingEnabled = streamingEnabled
         self.streamingThreshold = streamingThreshold
+        self.decodingMethod = decodingMethod
     }
 }
 
